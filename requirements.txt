@@ -1,1 +1,1 @@
-telethon==6.4.0
+telethon>=1.30.0
