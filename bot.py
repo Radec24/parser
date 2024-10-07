@@ -48,20 +48,6 @@ keyword_groups = [
         'excluded_words_file': 'rentacar_excluded_words.txt',  # Name of the excluded words file
         'target_chat_id': int('-1002156056838'),  # Replace with your target_chat_id
         'csv_file': 'RentaCar.csv'  # Name of the CSV file to write data
-    },
-    {
-        'name': 'Finance_UAE',
-        'keywords_file': 'finance_uae_keywords.txt',  # Name of the keywords file
-        'excluded_words_file': 'finance_uae_excluded_words.txt',  # Name of the excluded words file
-        'target_chat_id': int('-1002156056838'),  # Replace with your target_chat_id
-        'csv_file': 'Finance_UAE.csv'  # Name of the CSV file to write data
-    },
-    {
-        'name': 'Consulting',
-        'keywords_file': 'consulting_keywords.txt',  # Name of the keywords file
-        'excluded_words_file': 'consulting_excluded_words.txt',  # Name of the excluded words file
-        'target_chat_id': int('-1002156056838'),  # Replace with your target_chat_id
-        'csv_file': 'Consulting.csv'  # Name of the CSV file to write data
     }
 ]
 
