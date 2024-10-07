@@ -3,6 +3,8 @@ from telethon import TelegramClient, events, utils
 from telethon.errors import FloodWaitError, ServerError
 import re
 import os
+from telethon.tl.types import Channel, Chat, User  # <-- Ensure 'User' is imported here
+import asyncio
 from dotenv import load_dotenv
 
 # Load environment variables from .env if present
