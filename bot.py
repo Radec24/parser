@@ -79,20 +79,17 @@ RETRY_DELAY = 10
 @client.on(events.NewMessage)
 async def handle_new_message(event):
     message = event.message
-
-    # Log new message event
-    logging.info(f"Received message: {message.text} from {message.sender_id}")
-
-    # Check if sender is a bot
-    if isinstance(message.sender, User) and message.sender.bot:
-        logging.info("Message is from a bot. Ignoring...")
-        return
-
-    # Check if the message contains text
-    if not message.text:
+    
+    # Logging to verify that the bot is receiving messages
+    logging.info(f"Received message in chat {message.chat_id} from sender {message.sender_id}")
+    
+    # Log the message text for debugging
+    if message.text:
+        logging.info(f"Message text: {message.text}")
+    else:
         logging.info("Message does not contain text. Ignoring...")
         return
-
+    
     retries = 0
     while retries < MAX_RETRIES:
         try:
