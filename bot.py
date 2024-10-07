@@ -3,8 +3,6 @@ from telethon import TelegramClient, events, utils
 from telethon.errors import FloodWaitError, ServerError
 import re
 import os
-from telethon.tl.types import Channel, Chat, User
-import asyncio
 from dotenv import load_dotenv
 
 # Load environment variables from .env if present
@@ -25,18 +23,14 @@ API_ID = os.getenv('API_ID')
 API_HASH = os.getenv('API_HASH')
 BOT_TOKEN = os.getenv('BOT_TOKEN')  # Bot token to send messages
 
-if not API_ID or not API_HASH or not BOT_TOKEN:
-    logging.error("API_ID, API_HASH, and BOT_TOKEN must be set as environment variables.")
+if not BOT_TOKEN:
+    logging.error("BOT_TOKEN must be set as an environment variable.")
     exit(1)
 
-# Initialize the Telegram client for user account (listening)
-client = TelegramClient('account_session', API_ID, API_HASH)
-
-# Initialize the Telegram client for bot (sending messages)
+# Initialize the Telegram client for bot (listening and sending)
 bot_client = TelegramClient('bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
-logging.info("Telegram client started as a user account for listening.")
-logging.info("Bot client started for sending messages.")
+logging.info("Bot client started for listening and sending messages.")
 
 # Define keyword groups
 keyword_groups = [
@@ -74,7 +68,7 @@ MAX_RETRIES = 5
 RETRY_DELAY = 10
 
 
-@client.on(events.NewMessage)
+@bot_client.on(events.NewMessage)
 async def handle_new_message(event):
     message = event.message
     
@@ -104,7 +98,7 @@ async def handle_new_message(event):
                 user_id = message.sender_id
                 username = None
                 try:
-                    user = await client.get_entity(user_id)
+                    user = await bot_client.get_entity(user_id)
                     if isinstance(user, User):
                         username = user.username
                         display_name = utils.get_display_name(user)
@@ -114,7 +108,7 @@ async def handle_new_message(event):
                         raise ValueError()
                 except (ValueError, TypeError):
                     chat_id = message.chat_id
-                    chat = await client.get_entity(chat_id)
+                    chat = await bot_client.get_entity(chat_id)
                     if isinstance(chat, Channel) or isinstance(chat, Chat):
                         if chat.username:
                             chat_username = chat.username
@@ -130,11 +124,7 @@ async def handle_new_message(event):
                     await asyncio.sleep(e.seconds)
                 break
 
-# Start the user client to listen for messages
-logging.info("Starting Telegram client for listening...")
-with client:
-    client.run_until_disconnected()
-
-# Start the bot client for sending messages
+# Start the bot client to listen for messages and send notifications
+logging.info("Starting Telegram bot client for listening and sending...")
 with bot_client:
     bot_client.run_until_disconnected()
