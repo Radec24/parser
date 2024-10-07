@@ -2,10 +2,9 @@ import logging
 from telethon import TelegramClient, events, utils
 from telethon.errors import FloodWaitError, ServerError
 import re
-import csv
+import os
 from telethon.tl.types import Channel, Chat, User
 import asyncio
-import os
 from dotenv import load_dotenv
 
 # Load environment variables from .env if present
@@ -80,7 +79,7 @@ RETRY_DELAY = 10
 async def handle_new_message(event):
     message = event.message
     
-    # Logging to verify that the bot is receiving messages
+    # Logging to verify that the bot is receiving messages from all chats
     logging.info(f"Received message in chat {message.chat_id} from sender {message.sender_id}")
     
     # Log the message text for debugging
@@ -89,73 +88,53 @@ async def handle_new_message(event):
     else:
         logging.info("Message does not contain text. Ignoring...")
         return
-    
-    retries = 0
-    while retries < MAX_RETRIES:
-        try:
-            for group in keyword_groups:
-                group_name = group['name']
-                keywords = keyword_data[group_name]['keywords']
-                excluded_words = keyword_data[group_name]['excluded_words']
-                target_chat_id = group['target_chat_id']
 
-                if message.chat_id == target_chat_id:
-                    logging.info(f"Message from target chat {target_chat_id}. Ignoring...")
-                    continue
+    for group in keyword_groups:
+        group_name = group['name']
+        keywords = keyword_data[group_name]['keywords']
+        excluded_words = keyword_data[group_name]['excluded_words']
+        target_chat_id = group['target_chat_id']
 
-                for keyword in keywords:
-                    pattern = fr'(?i)\b{re.escape(keyword)}\b'
-                    if re.search(pattern, message.text) and not any(
-                            excluded_word in message.text.lower() for excluded_word in excluded_words):
-                        logging.info(f"Keyword '{keyword}' found in message from {message.sender_id}")
+        # Ignore messages coming from the target chat itself
+        if message.chat_id == target_chat_id:
+            logging.info(f"Ignoring messages from the target chat {target_chat_id}.")
+            return
 
-                        user_id = message.sender_id
-                        username = None
-                        try:
-                            user = await client.get_entity(user_id)
-                            if isinstance(user, User):
-                                username = user.username
-                                display_name = utils.get_display_name(user)
-                                user_link = f'<a href="tg://user?id={user_id}">{display_name}</a>'
-                                notification = f'Найдено ключевое слово "{keyword}" в сообщении от пользователя {user_link} (@{username}):\n\n{message.text}'
-                            else:
-                                raise ValueError()
-                        except (ValueError, TypeError):
-                            chat_id = message.chat_id
-                            chat = await client.get_entity(chat_id)
-                            if isinstance(chat, Channel) or isinstance(chat, Chat):
-                                if chat.username:
-                                    chat_username = chat.username
-                                    chat_link = f'<a href="https://t.me/{chat_username}/{message.id}">ссылка на сообщение</a>'
-                                    notification = f'Найдено ключевое слово "{keyword}" в сообщении от пользователя с недоступным именем. Ссылка на сообщение: {chat_link}:\n\n{message.text}'
+        # Check for keywords and excluded words
+        for keyword in keywords:
+            pattern = fr'(?i)\b{re.escape(keyword)}\b'
+            if re.search(pattern, message.text) and not any(
+                    excluded_word in message.text.lower() for excluded_word in excluded_words):
+                logging.info(f"Keyword '{keyword}' found in message from {message.sender_id}")
 
-                        # Send notification to target chat
-                        try:
-                            await client.send_message(entity=target_chat_id, message=notification, parse_mode='html')
-                            logging.info(f"Sent notification to chat {target_chat_id}")
-                        except FloodWaitError as e:
-                            logging.warning(
-                                f'FloodWaitError: Pausing for {e.seconds} seconds due to rate limiting.')
-                            await asyncio.sleep(e.seconds)
-                        break
+                user_id = message.sender_id
+                username = None
+                try:
+                    user = await client.get_entity(user_id)
+                    if isinstance(user, User):
+                        username = user.username
+                        display_name = utils.get_display_name(user)
+                        user_link = f'<a href="tg://user?id={user_id}">{display_name}</a>'
+                        notification = f'Найдено ключевое слово "{keyword}" в сообщении от пользователя {user_link} (@{username}):\n\n{message.text}'
+                    else:
+                        raise ValueError()
+                except (ValueError, TypeError):
+                    chat_id = message.chat_id
+                    chat = await client.get_entity(chat_id)
+                    if isinstance(chat, Channel) or isinstance(chat, Chat):
+                        if chat.username:
+                            chat_username = chat.username
+                            chat_link = f'<a href="https://t.me/{chat_username}/{message.id}">ссылка на сообщение</a>'
+                            notification = f'Найдено ключевое слово "{keyword}" в сообщении от пользователя с недоступным именем. Ссылка на сообщение: {chat_link}:\n\n{message.text}'
 
-            break  # Exit retry loop on success
-        except ServerError as e:
-            if 'No workers running' in str(e):
-                retries += 1
-                logging.error(
-                    f'Telegram server error (No workers running). Retrying in {RETRY_DELAY} seconds... (Retry {retries}/{MAX_RETRIES})')
-                await asyncio.sleep(RETRY_DELAY)
-            else:
-                logging.error(f"Unexpected ServerError: {e}")
-                raise  # Re-raise if it's a different error
-        except Exception as e:
-            logging.error(f'Unexpected error: {e}')
-            raise  # Exit on any other unexpected error
-
-    if retries == MAX_RETRIES:
-        logging.error('Max retries reached. Could not connect to Telegram servers.')
-
+                # Send notification to the target chat
+                try:
+                    await client.send_message(entity=target_chat_id, message=notification, parse_mode='html')
+                    logging.info(f"Sent notification to chat {target_chat_id}")
+                except FloodWaitError as e:
+                    logging.warning(f'FloodWaitError: Pausing for {e.seconds} seconds due to rate limiting.')
+                    await asyncio.sleep(e.seconds)
+                break
 
 # Start the Telegram client
 logging.info("Starting Telegram client...")
