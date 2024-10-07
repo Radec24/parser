@@ -23,21 +23,20 @@ logging.basicConfig(
 # Retrieve credentials from environment variables
 API_ID = os.getenv('API_ID')
 API_HASH = os.getenv('API_HASH')
-BOT_TOKEN = os.getenv('BOT_TOKEN')  # If using a bot token
+BOT_TOKEN = os.getenv('BOT_TOKEN')  # Bot token to send messages
 
-if not API_ID or not API_HASH:
-    logging.error("API_ID and API_HASH must be set as environment variables.")
+if not API_ID or not API_HASH or not BOT_TOKEN:
+    logging.error("API_ID, API_HASH, and BOT_TOKEN must be set as environment variables.")
     exit(1)
 
-# Initialize the Telegram client
-if BOT_TOKEN:
-    # If using a bot token
-    client = TelegramClient('bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
-    logging.info("Telegram client started as a bot.")
-else:
-    # If using a user account (requires phone login)
-    client = TelegramClient('account_session', API_ID, API_HASH)
-    logging.info("Telegram client started as a user account.")
+# Initialize the Telegram client for user account (listening)
+client = TelegramClient('account_session', API_ID, API_HASH)
+
+# Initialize the Telegram client for bot (sending messages)
+bot_client = TelegramClient('bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+
+logging.info("Telegram client started as a user account for listening.")
+logging.info("Bot client started for sending messages.")
 
 # Define keyword groups
 keyword_groups = [
@@ -95,11 +94,6 @@ async def handle_new_message(event):
         excluded_words = keyword_data[group_name]['excluded_words']
         target_chat_id = group['target_chat_id']
 
-        # Ignore messages coming from the target chat itself
-        if message.chat_id == target_chat_id:
-            logging.info(f"Ignoring messages from the target chat {target_chat_id}.")
-            return
-
         # Check for keywords and excluded words
         for keyword in keywords:
             pattern = fr'(?i)\b{re.escape(keyword)}\b'
@@ -127,16 +121,20 @@ async def handle_new_message(event):
                             chat_link = f'<a href="https://t.me/{chat_username}/{message.id}">ссылка на сообщение</a>'
                             notification = f'Найдено ключевое слово "{keyword}" в сообщении от пользователя с недоступным именем. Ссылка на сообщение: {chat_link}:\n\n{message.text}'
 
-                # Send notification to the target chat
+                # Send the message using the bot
                 try:
-                    await client.send_message(entity=target_chat_id, message=notification, parse_mode='html')
-                    logging.info(f"Sent notification to chat {target_chat_id}")
+                    await bot_client.send_message(entity=target_chat_id, message=notification, parse_mode='html')
+                    logging.info(f"Sent notification to chat {target_chat_id} via bot")
                 except FloodWaitError as e:
                     logging.warning(f'FloodWaitError: Pausing for {e.seconds} seconds due to rate limiting.')
                     await asyncio.sleep(e.seconds)
                 break
 
-# Start the Telegram client
-logging.info("Starting Telegram client...")
+# Start the user client to listen for messages
+logging.info("Starting Telegram client for listening...")
 with client:
     client.run_until_disconnected()
+
+# Start the bot client for sending messages
+with bot_client:
+    bot_client.run_until_disconnected()
