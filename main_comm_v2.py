@@ -17,14 +17,14 @@ api_hash = os.getenv('API_HASH')
 bot_token = os.getenv('BOT_TOKEN')
 
 # Paths to session files
-account_session_file = 'account_session.session'  # The path for the account session
-user_session_file = 'user_session.session'        # The path for the user session
-bot_session_file = 'bot.session'                  # The path for the bot session
+account_session_file = 'account_session.session'
+user_session_file = 'user_session.session'
+bot_session_file = 'bot.session'
 
 # Initialize the user client to listen to messages
 user_client = TelegramClient(user_session_file, api_id, api_hash)
 
-# Initialize the bot client for sending messages (bot does not listen to messages)
+# Initialize the bot client for sending messages
 bot_client = TelegramClient(bot_session_file, api_id, api_hash).start(bot_token=bot_token)
 
 # Define the keyword groups
@@ -118,16 +118,23 @@ async def handle_new_message(event):
                     user_id = message.sender_id
                     display_name = utils.get_display_name(message.sender)
 
-                    # Check if the user has a username
-                    if message.sender.username:
-                        username = message.sender.username
-                        user_link = f'<a href="tg://user?id={user_id}">{display_name}</a> (@{username}) с ID {user_id}'
-                    else:
-                        # User does not have a username, fall back to display name and ID
-                        user_link = f'<a href="tg://user?id={user_id}">{display_name}</a> с ID {user_id}'
+                    # Generate a user link (whether or not they have a username)
+                    user_link = f'<a href="tg://user?id={user_id}">{display_name}</a> с ID {user_id}'
                     
+                    # If the user has a username, append it to the message
+                    if message.sender.username:
+                        user_link += f" (@{message.sender.username})"
+                    
+                    # Create the source message link
+                    chat = await user_client.get_entity(message.chat_id)
+                    message_link = create_message_link(chat, message.id)
+
                     # Notification for user-sent message
-                    notification = f'Найдено ключевое слово "{keyword}" в сообщении от пользователя {user_link}:\n\n{message.text}'
+                    notification = (
+                        f'Найдено ключевое слово "{keyword}" в сообщении от пользователя {user_link}.\n'
+                        f'ссылка на сообщение: <a href="{message_link}">ссылка на сообщение</a>:\n\n'
+                        f'{message.text}'
+                    )
 
                 else:  # Sender is a group or channel
                     try:
@@ -135,7 +142,11 @@ async def handle_new_message(event):
                         if isinstance(chat, (Channel, Chat)):
                             chat_name = chat.title if hasattr(chat, 'title') else 'неизвестный чат'
                             message_link = create_message_link(chat, message.id)
-                            notification = f'Найдено ключевое слово "{keyword}" в сообщении от {chat_name}. Ссылка на сообщение: {message_link}\n\n{message.text}'
+                            notification = (
+                                f'Найдено ключевое слово "{keyword}" в сообщении от {chat_name}.\n'
+                                f'Ссылка на сообщение: <a href="{message_link}">ссылка на сообщение</a>\n\n'
+                                f'{message.text}'
+                            )
                     except Exception as e:
                         print(f"Error fetching chat details for chat_id {message.chat_id}: {e}")
 
