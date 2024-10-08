@@ -33,7 +33,7 @@ keyword_groups = [
         'name': 'RentaCar',
         'keywords_file': 'rentacar_keywords.txt',  # Имя файла с ключевыми словами
         'excluded_words_file': 'rentacar_excluded_words.txt',  # Имя файла с исключающими словами
-        'target_chat_id': int('-815314476'),  # Замените на нужный вам target_chat_id
+        'target_chat_id': int('-1002156056838'),  # Замените на нужный вам target_chat_id
         'csv_file': 'RentaCar.csv'  # Имя файла CSV для записи данных
     }
 ]
@@ -139,10 +139,10 @@ async def handle_new_message(event):
                     chat = await user_client.get_entity(message.chat_id)
                     message_link = create_message_link(chat, message.id)
 
-                    # Notification for user-sent message
+                    # Notification for user-sent message with "Ссылка" as hyperlink
                     notification = (
-                        f'Найдено ключевое слово "{keyword}" в сообщении от {user_link}.\n'
-                        f'ссылка на сообщение: <a href="{message_link}">ссылка на сообщение</a>:\n\n'
+                        f'Найдено ключевое слово "{keyword}" в сообщении от {display_name}.\n'
+                        f'<a href="{message_link}">Ссылка</a> на сообщение:\n\n'
                         f'{message.text}'
                     )
 
@@ -154,7 +154,7 @@ async def handle_new_message(event):
                             message_link = create_message_link(chat, message.id)
                             notification = (
                                 f'Найдено ключевое слово "{keyword}" в сообщении от {chat_name}.\n'
-                                f'Ссылка на сообщение: <a href="{message_link}">ссылка на сообщение</a>\n\n'
+                                f'<a href="{message_link}">Ссылка</a> на сообщение:\n\n'
                                 f'{message.text}'
                             )
                     except Exception as e:
