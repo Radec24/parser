@@ -130,19 +130,18 @@ async def handle_new_message(event):
                     user_id = message.sender_id
                     display_name = utils.get_display_name(message.sender)
 
-                    # Generate a user link (whether or not they have a username)
+                    # Generate a clickable user link, whether or not they have a username
+                    user_link = f'<a href="tg://user?id={user_id}">{display_name}</a>'
                     if message.sender.username:
                         user_link = f'<a href="tg://user?id={user_id}">{display_name} (@{message.sender.username})</a>'
-                    else:
-                        user_link = f'<a href="tg://user?id={user_id}">{display_name}</a>'
-                    
+
                     # Create the source message link
                     chat = await user_client.get_entity(message.chat_id)
                     message_link = create_message_link(chat, message.id)
 
                     # Notification for user-sent message
                     notification = (
-                        f'Найдено ключевое слово "{keyword}" в сообщении от пользователя {user_link}.\n'
+                        f'Найдено ключевое слово "{keyword}" в сообщении от {user_link}.\n'
                         f'ссылка на сообщение: <a href="{message_link}">ссылка на сообщение</a>:\n\n'
                         f'{message.text}'
                     )
