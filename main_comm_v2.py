@@ -43,11 +43,23 @@ keyword_data = {}
 
 for group in keyword_groups:
     keywords = []
-    with open(group['keywords_file'], 'r', encoding='utf-8') as file:
-        keywords = [line.strip().lower() for line in file]
     excluded_words = []
-    with open(group['excluded_words_file'], 'r', encoding='utf-8') as file:
-        excluded_words = [line.strip().lower() for line in file]
+    
+    try:
+        with open(group['keywords_file'], 'r', encoding='utf-8') as file:
+            keywords = [line.strip().lower() for line in file]
+    except Exception as e:
+        print(f"Error loading keywords from {group['keywords_file']}: {e}")
+    
+    try:
+        with open(group['excluded_words_file'], 'r', encoding='utf-8') as file:
+            excluded_words = [line.strip().lower() for line in file]
+    except Exception as e:
+        print(f"Error loading excluded words from {group['excluded_words_file']}: {e}")
+    
+    print(f"Loaded keywords for {group['name']}: {keywords}")
+    print(f"Loaded excluded words for {group['name']}: {excluded_words}")
+    
     keyword_data[group['name']] = {
         'keywords': keywords,
         'excluded_words': excluded_words
@@ -119,11 +131,10 @@ async def handle_new_message(event):
                     display_name = utils.get_display_name(message.sender)
 
                     # Generate a user link (whether or not they have a username)
-                    user_link = f'<a href="tg://user?id={user_id}">{display_name} с ID {user_id}</a>'
-                    
-                    # If the user has a username, append it to the message
                     if message.sender.username:
-                        user_link += f" (@{message.sender.username})"
+                        user_link = f'<a href="tg://user?id={user_id}">{display_name} (@{message.sender.username})</a>'
+                    else:
+                        user_link = f'<a href="tg://user?id={user_id}">{display_name}</a>'
                     
                     # Create the source message link
                     chat = await user_client.get_entity(message.chat_id)
