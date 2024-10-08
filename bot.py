@@ -16,11 +16,16 @@ api_hash = os.getenv('API_HASH')
 # Bot token for sending notifications
 bot_token = os.getenv('BOT_TOKEN')
 
+# Paths to session files
+account_session_file = 'account_session.session'  # The path for the account session
+user_session_file = 'user_session.session'  # The path for the user session
+bot_session_file = 'bot.session'  # The path for the bot session
+
 # Initialize the user client to listen to messages
-user_client = TelegramClient('user_session', api_id, api_hash)
+user_client = TelegramClient(user_session_file, api_id, api_hash)
 
 # Initialize the bot client for sending messages (bot does not listen to messages)
-bot_client = TelegramClient('bot', api_id, api_hash).start(bot_token=bot_token)
+bot_client = TelegramClient(bot_session_file, api_id, api_hash).start(bot_token=bot_token)
 
 # Define the keyword groups
 keyword_groups = [
