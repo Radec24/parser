@@ -18,8 +18,8 @@ bot_token = os.getenv('BOT_TOKEN')
 
 # Paths to session files
 account_session_file = 'account_session.session'  # The path for the account session
-user_session_file = 'user_session.session'  # The path for the user session
-bot_session_file = 'bot.session'  # The path for the bot session
+user_session_file = 'user_session.session'        # The path for the user session
+bot_session_file = 'bot.session'                  # The path for the bot session
 
 # Initialize the user client to listen to messages
 user_client = TelegramClient(user_session_file, api_id, api_hash)
@@ -59,14 +59,12 @@ processed_messages = {}
 # Time to keep messages in memory before clearing (in seconds)
 MESSAGE_EXPIRY_TIME = 24 * 60 * 60  # 24 hours
 
-
 def clean_old_messages():
     """Clean up processed messages that are older than MESSAGE_EXPIRY_TIME."""
     current_time = time.time()
     expired = [key for key, timestamp in processed_messages.items() if current_time - timestamp > MESSAGE_EXPIRY_TIME]
     for key in expired:
         del processed_messages[key]
-
 
 def create_message_link(chat, message_id):
     """Creates a valid message link for private or public chats."""
@@ -77,7 +75,6 @@ def create_message_link(chat, message_id):
         # For private groups or channels
         chat_id_adjusted = chat.id - 1000000000000
         return f'https://t.me/c/{chat_id_adjusted}/{message_id}'
-
 
 @user_client.on(events.NewMessage)  # Only the user client listens for new messages
 async def handle_new_message(event):
@@ -113,13 +110,12 @@ async def handle_new_message(event):
             pattern = fr'(?i)\b{re.escape(keyword)}\b'
             if re.search(pattern, message.text) and not any(
                     excluded_word in message.text.lower() for excluded_word in excluded_words):
-
+                
                 notification = None
 
                 # Check if the sender is a user or a group/channel
                 if isinstance(message.sender, User):  # Sender is a user
                     user_id = message.sender_id
-                    username = None
                     display_name = utils.get_display_name(message.sender)
 
                     # Check if the user has a username
@@ -127,8 +123,9 @@ async def handle_new_message(event):
                         username = message.sender.username
                         user_link = f'<a href="tg://user?id={user_id}">{display_name}</a> (@{username}) с ID {user_id}'
                     else:
+                        # User does not have a username, fall back to display name and ID
                         user_link = f'<a href="tg://user?id={user_id}">{display_name}</a> с ID {user_id}'
-
+                    
                     # Notification for user-sent message
                     notification = f'Найдено ключевое слово "{keyword}" в сообщении от пользователя {user_link}:\n\n{message.text}'
 
@@ -149,7 +146,6 @@ async def handle_new_message(event):
                     except FloodWaitError as e:
                         print(f'FloodWaitError: Pausing for {e.seconds} seconds due to rate limiting.')
                 break
-
 
 # Run the user client for listening and the bot for sending notifications
 with user_client:
