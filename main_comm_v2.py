@@ -119,7 +119,7 @@ async def handle_new_message(event):
                     display_name = utils.get_display_name(message.sender)
 
                     # Generate a user link (whether or not they have a username)
-                    user_link = f'<a href="tg://user?id={user_id}">{display_name}</a> с ID {user_id}'
+                    user_link = f'<a href="tg://user?id={user_id}">{display_name} с ID {user_id}</a>'
                     
                     # If the user has a username, append it to the message
                     if message.sender.username:
