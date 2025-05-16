@@ -33,7 +33,7 @@ keyword_groups = [
         'name': 'RentaCar',
         'keywords_file': 'rentacar_keywords.txt',  # Имя файла с ключевыми словами
         'excluded_words_file': 'rentacar_excluded_words.txt',  # Имя файла с исключающими словами
-        'target_chat_id': int('-00000000'),  # Замените на нужный вам target_chat_id
+        'target_chat_id': int('-4781933342'),  # Замените на нужный вам target_chat_id
         'csv_file': 'RentaCar.csv'  # Имя файла CSV для записи данных
     }
 ]
