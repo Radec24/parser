@@ -142,7 +142,8 @@ async def main() -> None:
                     else "Ссылка недоступна"
                 )
                 text = (
-                    f"🚨 Найдено совпадение по адресу кошелька:<b>{kw}</b>\n"
+                    f"🚨 Найдено совпадение по адресу:<b>{kw}</b>\n"
+                    f"Оригинал сообщения:"
                     f"{msg.message}\n\n"
                     f"{anchor}"
                 )
@@ -152,7 +153,7 @@ async def main() -> None:
                         g.target_chat_id,
                         text,
                         parse_mode="html",
-                        link_preview=False,
+                        link_preview=True,
                     )
                     logger.info("➡️  Совпадение «%s» переслано (%s)", kw, link)
                 except errors.rpcerrorlist.FloodWaitError as e:
