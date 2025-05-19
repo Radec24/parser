@@ -1,173 +1,171 @@
-from telethon import TelegramClient, events, utils
-from telethon.errors import FloodWaitError
-import re
-from telethon.tl.types import Channel, Chat, User
+import asyncio
+import csv
+import logging
 import os
 import time
-from dotenv import load_dotenv
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, List, Set, Tuple
 
-# Load environment variables from .env if present
-load_dotenv()
+from telethon import TelegramClient, events, errors
 
-# User account credentials for listening
-api_id = os.getenv('API_ID')
-api_hash = os.getenv('API_HASH')
+# ─────────────────────────────── CONFIG ─────────────────────────────── #
 
-# Bot token for sending notifications
-bot_token = os.getenv('BOT_TOKEN')
+API_ID: int | None = int(os.getenv("API_ID", "0")) or None
+API_HASH: str | None = os.getenv("API_HASH")
+BOT_TOKEN: str | None = os.getenv("BOT_TOKEN")
 
-# Paths to session files
-account_session_file = 'account_session.session'
-user_session_file = 'user_session.session'
-bot_session_file = 'bot.session'
+if not all((API_ID, API_HASH, BOT_TOKEN)):
+    raise RuntimeError("Не заданы переменные окружения API_ID / API_HASH / BOT_TOKEN")
 
-# Initialize the user client to listen to messages
-user_client = TelegramClient(user_session_file, api_id, api_hash)
-
-# Initialize the bot client for sending messages
-bot_client = TelegramClient(bot_session_file, api_id, api_hash).start(bot_token=bot_token)
-
-# Define the keyword groups
-keyword_groups = [
+# группы мониторинга
+keyword_groups: List[dict] = [
     {
-        'name': 'RentaCar',
-        'keywords_file': 'rentacar_keywords.txt',  # Имя файла с ключевыми словами
-        'excluded_words_file': 'rentacar_excluded_words.txt',  # Имя файла с исключающими словами
-        'target_chat_id': int('-4781933342'),  # Замените на нужный вам target_chat_id
-        'csv_file': 'RentaCar.csv'  # Имя файла CSV для записи данных
-    }
+        "name": "wallets",                           # произвольное «человеческое» название
+        "keywords_file": "wallets_keywords.txt",     # список искомых адресов/слов
+        "target_chat_id": int(os.getenv("TARGET_CHAT_ID", "0")),
+        "csv_file": "log.csv",                       # журнал совпадений (можно None)
+    },
 ]
 
-# Загрузка ключевых слов и исключающих слов в память
-keyword_data = {}
+PROCESSED_TTL = 24 * 60 * 60  # 24 ч — кэш уже обработанных сообщений
 
-for group in keyword_groups:
-    keywords = []
-    excluded_words = []
-    
-    try:
-        with open(group['keywords_file'], 'r', encoding='utf-8') as file:
-            keywords = [line.strip().lower() for line in file]
-    except Exception as e:
-        print(f"Error loading keywords from {group['keywords_file']}: {e}")
-    
-    try:
-        with open(group['excluded_words_file'], 'r', encoding='utf-8') as file:
-            excluded_words = [line.strip().lower() for line in file]
-    except Exception as e:
-        print(f"Error loading excluded words from {group['excluded_words_file']}: {e}")
-    
-    print(f"Loaded keywords for {group['name']}: {keywords}")
-    print(f"Loaded excluded words for {group['name']}: {excluded_words}")
-    
-    keyword_data[group['name']] = {
-        'keywords': keywords,
-        'excluded_words': excluded_words
-    }
+# ────────────────────────────── LOGGING ─────────────────────────────── #
 
-# Store processed messages to prevent duplicates (message ID + chat ID)
-processed_messages = {}
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+)
+logger = logging.getLogger("parser")
 
-# Time to keep messages in memory before clearing (in seconds)
-MESSAGE_EXPIRY_TIME = 24 * 60 * 60  # 24 hours
+# ───────────────────────────── UTILITIES ────────────────────────────── #
 
-def clean_old_messages():
-    """Clean up processed messages that are older than MESSAGE_EXPIRY_TIME."""
-    current_time = time.time()
-    expired = [key for key, timestamp in processed_messages.items() if current_time - timestamp > MESSAGE_EXPIRY_TIME]
-    for key in expired:
-        del processed_messages[key]
 
-def create_message_link(chat, message_id):
-    """Creates a valid message link for private or public chats."""
-    if hasattr(chat, 'username') and chat.username:
-        # For public channels or groups with a username
-        return f'https://t.me/{chat.username}/{message_id}'
-    else:
-        # For private groups or channels
-        chat_id_adjusted = chat.id - 1000000000000
-        return f'https://t.me/c/{chat_id_adjusted}/{message_id}'
+def load_keywords(path: str) -> Set[str]:
+    """Читает файл ключевых слов, игнорируя пустые строки и комментарии."""
+    p = Path(path)
+    if not p.exists():
+        logger.warning("Файл %s не найден — ключевых слов 0", path)
+        return set()
+    with p.open(encoding="utf-8") as fh:
+        return {ln.strip().lower() for ln in fh if ln.strip() and not ln.startswith("#")}
 
-@user_client.on(events.NewMessage)  # Only the user client listens for new messages
-async def handle_new_message(event):
-    message = event.message
 
-    # Prevent message loops by ignoring messages from the target chat
-    for group in keyword_groups:
-        if message.chat_id == group['target_chat_id']:
+def find_keyword(text: str, keywords: Set[str]) -> str | None:
+    """Вернёт первое ключевое слово, найденное в тексте, иначе None."""
+    text_lc = text.lower()
+    for kw in keywords:
+        if kw in text_lc:
+            return kw
+    return None
+
+
+def tg_link(chat, msg_id: int) -> str:
+    """Строит публичную ссылку на сообщение."""
+    if chat.username:
+        return f"https://t.me/{chat.username}/{msg_id}"
+    return f"https://t.me/c/{abs(chat.id) - 10 ** 12}/{msg_id}"
+
+
+def purge(cache: Dict[Tuple[int, int], float]) -> None:
+    """Удаляет устаревшие элементы из кэша processed."""
+    now = time.time()
+    for key in [k for k, ts in cache.items() if now - ts > PROCESSED_TTL]:
+        del cache[key]
+
+
+# ────────────────────────────── WRAPPER ─────────────────────────────── #
+
+
+class GroupData:
+    __slots__ = ("name", "keywords", "target_chat_id", "csv_writer")
+
+    def __init__(self, cfg: dict):
+        self.name: str = cfg["name"]
+        self.keywords: Set[str] = load_keywords(cfg["keywords_file"])
+        self.target_chat_id: int = cfg["target_chat_id"]
+
+        csv_file = cfg.get("csv_file")
+        if csv_file:
+            path = Path(csv_file)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self.csv_writer = path.open("a", newline="", encoding="utf-8")
+            if path.stat().st_size == 0:
+                csv.writer(self.csv_writer).writerow(
+                    ["datetime_utc", "chat_id", "message_id", "text"]
+                )
+        else:
+            self.csv_writer = None
+
+
+# ─────────────────────────────── MAIN ──────────────────────────────── #
+
+
+async def main() -> None:
+    """Создаём клиентов в рамках одного event-loop и запускаем парсер."""
+    user_client = TelegramClient("user_session", API_ID, API_HASH)
+    bot_client = TelegramClient("bot_session", API_ID, API_HASH)
+
+    await bot_client.start(bot_token=BOT_TOKEN)
+    await user_client.start()
+
+    groups = [GroupData(cfg) for cfg in keyword_groups]
+    processed: Dict[Tuple[int, int], float] = {}
+
+    # ―――――――― handler ―――――――― #
+    async def on_new_message(event: events.NewMessage.Event) -> None:
+        msg = event.message
+        chat = await event.get_chat()
+
+        key = (chat.id, msg.id)
+        if key in processed:
             return
+        processed[key] = time.time()
+        purge(processed)
 
-    # Create a unique message key (chat_id + message_id)
-    message_key = (message.chat_id, message.id)
+        for g in groups:
+            if chat.id == g.target_chat_id:
+                continue  # не ловим собственные пересланные сообщения
 
-    # Check if this message has already been processed
-    if message_key in processed_messages:
-        print(f"Message {message.id} from chat {message.chat_id} has already been processed.")
-        return
-
-    # Mark the message as processed
-    processed_messages[message_key] = time.time()
-
-    # Clean old messages (this can be done periodically, e.g., every X messages)
-    clean_old_messages()
-
-    # Process messages and check for keywords
-    for group in keyword_groups:
-        group_name = group['name']
-        keywords = keyword_data[group_name]['keywords']
-        excluded_words = keyword_data[group_name]['excluded_words']
-        target_chat_id = group['target_chat_id']
-
-        for keyword in keywords:
-            pattern = fr'(?i)\b{re.escape(keyword)}\b'
-            if re.search(pattern, message.text) and not any(
-                    excluded_word in message.text.lower() for excluded_word in excluded_words):
-                
-                notification = None
-
-                # Check if the sender is a user or a group/channel
-                if isinstance(message.sender, User):  # Sender is a user
-                    user_id = message.sender_id
-                    display_name = utils.get_display_name(message.sender)
-
-                    # Generate a clickable user link, whether or not they have a username
-                    user_link = f'<a href="tg://user?id={user_id}">{display_name}</a>'
-                    if message.sender.username:
-                        user_link = f'<a href="tg://user?id={user_id}">{display_name} (@{message.sender.username})</a>'
-
-                    # Create the source message link
-                    chat = await user_client.get_entity(message.chat_id)
-                    message_link = create_message_link(chat, message.id)
-
-                    # Notification for user-sent message with "Ссылка" as hyperlink
-                    notification = (
-                        f'Найдено ключевое слово "{keyword}" в сообщении от {display_name}.\n'
-                        f'<a href="{message_link}">Ссылка</a> на сообщение:\n\n'
-                        f'{message.text}'
+            kw = find_keyword(msg.message or "", g.keywords)
+            if kw:
+                link = tg_link(chat, msg.id)
+                text = (
+                    f"🚨 Найдено совпадение по адресу кошелька:<b>{kw}</b>\n"
+                    f"{msg.message}\n\n"
+                    f'<a href="{link}">Открыть сообщение</a>'
+                )
+                try:
+                    await bot_client.send_message(
+                        g.target_chat_id,
+                        text,
+                        parse_mode="html",
+                        link_preview=False,
                     )
+                    logger.info("Переслано сообщение с ключом «%s» - %s", kw, link)
+                except errors.rpcerrorlist.FloodWaitError as e:
+                    logger.warning("FloodWait %d s", e.seconds)
+                    await asyncio.sleep(e.seconds)
 
-                else:  # Sender is a group or channel
-                    try:
-                        chat = await user_client.get_entity(message.chat_id)
-                        if isinstance(chat, (Channel, Chat)):
-                            chat_name = chat.title if hasattr(chat, 'title') else 'неизвестный чат'
-                            message_link = create_message_link(chat, message.id)
-                            notification = (
-                                f'Найдено ключевое слово "{keyword}" в сообщении от {chat_name}.\n'
-                                f'<a href="{message_link}">Ссылка</a> на сообщение:\n\n'
-                                f'{message.text}'
-                            )
-                    except Exception as e:
-                        print(f"Error fetching chat details for chat_id {message.chat_id}: {e}")
+                if g.csv_writer:
+                    csv.writer(g.csv_writer).writerow(
+                        [
+                            datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                            chat.id,
+                            msg.id,
+                            (msg.message or "").replace("\n", " "),
+                        ]
+                    )
+                    g.csv_writer.flush()
 
-                # Send notification to the target chat using the bot
-                if notification:
-                    try:
-                        await bot_client.send_message(entity=target_chat_id, message=notification, parse_mode='html')
-                    except FloodWaitError as e:
-                        print(f'FloodWaitError: Pausing for {e.seconds} seconds due to rate limiting.')
-                break
+    user_client.add_event_handler(on_new_message, events.NewMessage)
 
-# Run the user client for listening and the bot for sending notifications
-with user_client:
-    user_client.run_until_disconnected()
+    logger.info("Парсер запущен, ждём сообщений…")
+    await user_client.run_until_disconnected()
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Завершено пользователем")
