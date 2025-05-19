@@ -5,30 +5,30 @@ import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Set, Tuple, Optional
 
 from telethon import TelegramClient, events, errors
+from telethon.tl.types import Channel  # для проверки типа чата
 
 # ─────────────────────────────── CONFIG ─────────────────────────────── #
 
-API_ID: int | None = int(os.getenv("API_ID", "0")) or None
-API_HASH: str | None = os.getenv("API_HASH")
-BOT_TOKEN: str | None = os.getenv("BOT_TOKEN")
+API_ID: Optional[int] = int(os.getenv("API_ID", "0")) or None
+API_HASH: Optional[str] = os.getenv("API_HASH")
+BOT_TOKEN: Optional[str] = os.getenv("BOT_TOKEN")
 
 if not all((API_ID, API_HASH, BOT_TOKEN)):
-    raise RuntimeError("Не заданы переменные окружения API_ID / API_HASH / BOT_TOKEN")
+    raise RuntimeError("API_ID / API_HASH / BOT_TOKEN должны быть заданы в переменных окружения")
 
-# группы мониторинга
 keyword_groups: List[dict] = [
     {
-        "name": "wallets",                           # произвольное «человеческое» название
-        "keywords_file": "wallets_keywords.txt",     # список искомых адресов/слов
+        "name": "wallets",
+        "keywords_file": "wallets_keywords.txt",
         "target_chat_id": int(os.getenv("TARGET_CHAT_ID", "0")),
-        "csv_file": "log.csv",                       # журнал совпадений (можно None)
+        "csv_file": "log.csv",
     },
 ]
 
-PROCESSED_TTL = 24 * 60 * 60  # 24 ч — кэш уже обработанных сообщений
+PROCESSED_TTL = 24 * 60 * 60  # 24 часа – время жизни кэша дубликатов
 
 # ────────────────────────────── LOGGING ─────────────────────────────── #
 
@@ -42,17 +42,17 @@ logger = logging.getLogger("parser")
 
 
 def load_keywords(path: str) -> Set[str]:
-    """Читает файл ключевых слов, игнорируя пустые строки и комментарии."""
+    """Читает файл ключевых слов, пропуская пустые строки и комментарии."""
     p = Path(path)
     if not p.exists():
-        logger.warning("Файл %s не найден — ключевых слов 0", path)
+        logger.warning("Файл ключевых слов %s не найден — список пуст", path)
         return set()
     with p.open(encoding="utf-8") as fh:
-        return {ln.strip().lower() for ln in fh if ln.strip() and not ln.startswith("#")}
+        return {line.strip().lower() for line in fh if line.strip() and not line.startswith("#")}
 
 
-def find_keyword(text: str, keywords: Set[str]) -> str | None:
-    """Вернёт первое ключевое слово, найденное в тексте, иначе None."""
+def find_keyword(text: str, keywords: Set[str]) -> Optional[str]:
+    """Возвращает первое найденное ключевое слово или None."""
     text_lc = text.lower()
     for kw in keywords:
         if kw in text_lc:
@@ -61,20 +61,22 @@ def find_keyword(text: str, keywords: Set[str]) -> str | None:
 
 
 def tg_link(chat, msg_id: int) -> str:
-    """Строит публичную ссылку на сообщение."""
-    if chat.username:
-        return f"https://t.me/{chat.username}/{msg_id}"
-    return f"https://t.me/c/{abs(chat.id) - 10 ** 12}/{msg_id}"
+    """
+    Пытается построить публичную ссылку на сообщение.
+    • Для публичных каналов/групп — https://t.me/username/<id>
+    • Для приватных супер-групп  — https://t.me/c/<internal>/<id>
+    • Для малых групп ссылки нет → возвращает "—"
+    """
+    username = getattr(chat, "username", None)
+    if username:  # публичный канал/супергруппа или пользователь
+        return f"https://t.me/{username}/{msg_id}"
 
+    if isinstance(chat, Channel):  # приватная супер-группа
+        return f"https://t.me/c/{abs(chat.id) - 10 ** 12}/{msg_id}"
 
-def purge(cache: Dict[Tuple[int, int], float]) -> None:
-    """Удаляет устаревшие элементы из кэша processed."""
-    now = time.time()
-    for key in [k for k, ts in cache.items() if now - ts > PROCESSED_TTL]:
-        del cache[key]
+    return "—"  # обычная (малая) группа
 
-
-# ────────────────────────────── WRAPPER ─────────────────────────────── #
+# ───────────────────────────── WRAPPER ──────────────────────────────── #
 
 
 class GroupData:
@@ -102,7 +104,7 @@ class GroupData:
 
 
 async def main() -> None:
-    """Создаём клиентов в рамках одного event-loop и запускаем парсер."""
+    """Создаём клиентов в одном event-loop и запускаем парсер."""
     user_client = TelegramClient("user_session", API_ID, API_HASH)
     bot_client = TelegramClient("bot_session", API_ID, API_HASH)
 
@@ -112,7 +114,7 @@ async def main() -> None:
     groups = [GroupData(cfg) for cfg in keyword_groups]
     processed: Dict[Tuple[int, int], float] = {}
 
-    # ―――――――― handler ―――――――― #
+    # ――――――――― handler ――――――――― #
     async def on_new_message(event: events.NewMessage.Event) -> None:
         msg = event.message
         chat = await event.get_chat()
@@ -121,20 +123,30 @@ async def main() -> None:
         if key in processed:
             return
         processed[key] = time.time()
-        purge(processed)
+        # очищаем старые ключи
+        now = time.time()
+        processed_keys = [k for k, ts in processed.items() if now - ts > PROCESSED_TTL]
+        for k in processed_keys:
+            del processed[k]
 
         for g in groups:
             if chat.id == g.target_chat_id:
-                continue  # не ловим собственные пересланные сообщения
+                continue  # не ловим собственные уведомления
 
             kw = find_keyword(msg.message or "", g.keywords)
             if kw:
                 link = tg_link(chat, msg.id)
+                anchor = (
+                    f'<a href="{link}">Открыть сообщение</a>'
+                    if link != "—"
+                    else "Ссылка недоступна"
+                )
                 text = (
                     f"🚨 Найдено совпадение по адресу кошелька:<b>{kw}</b>\n"
                     f"{msg.message}\n\n"
-                    f'<a href="{link}">Открыть сообщение</a>'
+                    f"{anchor}"
                 )
+
                 try:
                     await bot_client.send_message(
                         g.target_chat_id,
@@ -142,9 +154,9 @@ async def main() -> None:
                         parse_mode="html",
                         link_preview=False,
                     )
-                    logger.info("Переслано сообщение с ключом «%s» - %s", kw, link)
+                    logger.info("➡️  Совпадение «%s» переслано (%s)", kw, link)
                 except errors.rpcerrorlist.FloodWaitError as e:
-                    logger.warning("FloodWait %d s", e.seconds)
+                    logger.warning("FloodWait %d s, спим…", e.seconds)
                     await asyncio.sleep(e.seconds)
 
                 if g.csv_writer:
@@ -160,7 +172,7 @@ async def main() -> None:
 
     user_client.add_event_handler(on_new_message, events.NewMessage)
 
-    logger.info("Парсер запущен, ждём сообщений…")
+    logger.info("Парсер запущен, ждём сообщения…")
     await user_client.run_until_disconnected()
 
 
