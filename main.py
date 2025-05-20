@@ -28,7 +28,7 @@ keyword_groups: List[dict] = [
     },
 ]
 
-PROCESSED_TTL = 24 * 60 * 60  # 24 часа – время жизни кэша дубликатов
+PROCESSED_TTL = 24 * 60 * 60  # 24 ч — время жизни кэша дубликатов
 
 # ────────────────────────────── LOGGING ─────────────────────────────── #
 
@@ -41,42 +41,87 @@ logger = logging.getLogger("parser")
 # ───────────────────────────── UTILITIES ────────────────────────────── #
 
 
-def load_keywords(path: str) -> Set[str]:
-    """Читает файл ключевых слов, пропуская пустые строки и комментарии."""
+def load_keywords(path: str) -> Dict[str, str]:
+    """
+    Возвращает словарь {keyword_lower: alias}.
+
+    Поддерживаемые форматы строк в wallets_keywords.txt:
+        keyword|alias
+        keyword:alias
+        keyword,alias
+        keyword            # alias = keyword
+
+    Пустые строки и строки, начинающиеся с «#», игнорируются.
+    """
     p = Path(path)
     if not p.exists():
         logger.warning("Файл ключевых слов %s не найден — список пуст", path)
-        return set()
+        return {}
+
+    mapping: Dict[str, str] = {}
     with p.open(encoding="utf-8") as fh:
-        return {line.strip().lower() for line in fh if line.strip() and not line.startswith("#")}
+        for raw in fh:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            for sep in ("|", ":", ","):
+                if sep in line:
+                    kw, alias = map(str.strip, line.split(sep, 1))
+                    break
+            else:
+                kw, alias = line, line
+
+            mapping[kw.lower()] = alias
+    return mapping
 
 
-def find_keyword(text: str, keywords: Set[str]) -> Optional[str]:
-    """Возвращает первое найденное ключевое слово или None."""
+def find_keyword(text: str, kw_map: Dict[str, str]) -> Optional[str]:
+    """
+    Возвращает псевдоним первого найденного ключевого слова
+    или None, если совпадений нет.
+    """
     text_lc = text.lower()
-    for kw in keywords:
+    for kw, alias in kw_map.items():
         if kw in text_lc:
-            return kw
+            return alias
     return None
 
 
 def tg_link(chat, msg_id: int) -> str:
     """
     Пытается построить публичную ссылку на сообщение.
-    • Для публичных каналов/групп — https://t.me/username/<id>
-    • Для приватных супер-групп  — https://t.me/c/<internal>/<id>
-    • Для малых групп ссылки нет → возвращает "—"
+    • Публичные каналы/супергруппы — https://t.me/<username>/<id>
+    • Приватные супергруппы       — https://t.me/c/<internal>/<id>
+    • Малые приватные группы ссылки не имеют → «—»
     """
     username = getattr(chat, "username", None)
     if username:  # публичный канал/супергруппа или пользователь
         return f"https://t.me/{username}/{msg_id}"
 
-    if isinstance(chat, Channel):  # приватная супер-группа
+    if isinstance(chat, Channel):  # приватная супергруппа
         return f"https://t.me/c/{abs(chat.id) - 10 ** 12}/{msg_id}"
 
     return "—"  # обычная (малая) группа
 
-# ───────────────────────────── WRAPPER ──────────────────────────────── #
+
+class DupCache:
+    """Простейший TTL-кэш, позволяющий фильтровать дубликаты сообщений."""
+
+    def __init__(self, ttl: int = PROCESSED_TTL):
+        self.ttl = ttl
+        self._cache: Dict[Tuple[int, int], float] = {}
+
+    def add(self, chat_id: int, msg_id: int) -> bool:
+        """True, если такого (chat_id, msg_id) не было за последние ttl секунд."""
+        key = (chat_id, msg_id)
+        now = time.time()
+        # чистим просроченные записи
+        self._cache = {k: v for k, v in self._cache.items() if now - v < self.ttl}
+        if key in self._cache:
+            return False
+        self._cache[key] = now
+        return True
 
 
 class GroupData:
@@ -84,7 +129,8 @@ class GroupData:
 
     def __init__(self, cfg: dict):
         self.name: str = cfg["name"]
-        self.keywords: Set[str] = load_keywords(cfg["keywords_file"])
+        # теперь это Dict[str, str] {keyword: alias}
+        self.keywords: Dict[str, str] = load_keywords(cfg["keywords_file"])
         self.target_chat_id: int = cfg["target_chat_id"]
 
         csv_file = cfg.get("csv_file")
@@ -100,7 +146,7 @@ class GroupData:
             self.csv_writer = None
 
 
-# ─────────────────────────────── MAIN ──────────────────────────────── #
+# ───────────────────────────── MAIN LOGIC ────────────────────────────── #
 
 
 async def main() -> None:
@@ -112,64 +158,63 @@ async def main() -> None:
     await user_client.start()
 
     groups = [GroupData(cfg) for cfg in keyword_groups]
-    processed: Dict[Tuple[int, int], float] = {}
+    dup_cache = DupCache()
 
     # ――――――――― handler ――――――――― #
     async def on_new_message(event: events.NewMessage.Event) -> None:
         msg = event.message
         chat = await event.get_chat()
 
-        key = (chat.id, msg.id)
-        if key in processed:
+        # смотрим, подходит ли чат к какому-нибудь из настроенных
+        g: Optional[GroupData] = next((x for x in groups if x.target_chat_id and chat.id), None)
+        if g is None:
             return
-        processed[key] = time.time()
-        # очищаем старые ключи
-        now = time.time()
-        processed_keys = [k for k, ts in processed.items() if now - ts > PROCESSED_TTL]
-        for k in processed_keys:
-            del processed[k]
 
-        for g in groups:
-            if chat.id == g.target_chat_id:
-                continue  # не ловим собственные уведомления
+        # фильтр дубликатов
+        if not dup_cache.add(chat.id, msg.id):
+            return
 
-            kw = find_keyword(msg.message or "", g.keywords)
-            if kw:
-                link = tg_link(chat, msg.id)
-                anchor = (
-                    f'<a href="{link}">Открыть сообщение</a>'
-                    if link != "—"
-                    else "Ссылка недоступна"
+        # не реагируем на собственные уведомления, чтобы не зациклиться
+        if msg.out and msg.to_id and getattr(msg.to_id, "channel_id", None) == g.target_chat_id:
+            return
+
+        kw_alias = find_keyword(msg.message or "", g.keywords)
+        if kw_alias:
+            link = tg_link(chat, msg.id)
+            anchor = (
+                f'<a href="{link}">Открыть сообщение</a>' if link != "—" else "Ссылка недоступна"
+            )
+            text = (
+                f"🚨 Найдено совпадение по адресу:\n<b>{kw_alias}</b>\n"
+                f"Оригинал сообщения:\n"
+                f"{msg.message}\n"
+                f"{anchor}"
+            )
+
+            try:
+                await bot_client.send_message(
+                    g.target_chat_id,
+                    text,
+                    parse_mode="html",
+                    link_preview=True,
                 )
-                text = (
-                    f"🚨 Найдено совпадение по адресу:\n<b>{kw}</b>\n"
-                    f"Оригинал сообщения:\n"
-                    f"{msg.message}\n"
-                    f"{anchor}"
-                )
+                logger.info("➡️  Совпадение «%s» переслано (%s)", kw_alias, link)
+            except errors.ChatWriteForbiddenError:
+                logger.error("❌ Нет прав писать в целевой чат %s", g.target_chat_id)
+            except Exception as exc:
+                logger.exception("Ошибка при отправке сообщения: %s", exc)
 
-                try:
-                    await bot_client.send_message(
-                        g.target_chat_id,
-                        text,
-                        parse_mode="html",
-                        link_preview=True,
-                    )
-                    logger.info("➡️  Совпадение «%s» переслано (%s)", kw, link)
-                except errors.rpcerrorlist.FloodWaitError as e:
-                    logger.warning("FloodWait %d s, спим…", e.seconds)
-                    await asyncio.sleep(e.seconds)
-
-                if g.csv_writer:
-                    csv.writer(g.csv_writer).writerow(
-                        [
-                            datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                            chat.id,
-                            msg.id,
-                            (msg.message or "").replace("\n", " "),
-                        ]
-                    )
-                    g.csv_writer.flush()
+        # логируем всё, если задан csv_file
+        if g.csv_writer:
+            csv.writer(g.csv_writer).writerow(
+                [
+                    datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    chat.id,
+                    msg.id,
+                    (msg.message or "").replace("\n", " "),
+                ]
+            )
+            g.csv_writer.flush()
 
     user_client.add_event_handler(on_new_message, events.NewMessage)
 
